@@ -1,0 +1,183 @@
+# Azure Key Vault Secret Update Pipeline
+# This pipeline updates JSON-based secrets in Azure Key Vault with approval gates
+
+trigger: none  # Manual trigger only
+
+parameters:
+  # Key Vault Configuration
+  - name: keyVaultName
+    displayName: 'Key Vault Name'
+    type: string
+    default: ''
+
+  - name: secretName
+    displayName: 'Secret Name to Update'
+    type: string
+    default: ''
+
+  # JSON Updates - Format: key1=value1,key2=value2
+  - name: jsonUpdates
+    displayName: 'JSON Key-Value Updates (format: key1=value1,key2=value2)'
+    type: string
+    default: ''
+
+  # Advanced: Nested JSON path support (e.g., "parent.child.key=value")
+  - name: supportNestedKeys
+    displayName: 'Support Nested JSON Keys'
+    type: boolean
+    default: true
+
+  # Target Environments
+  - name: environments
+    displayName: 'Target Environments'
+    type: object
+    default:
+      - name: dev
+        displayName: 'Development'
+        serviceConnection: 'azure-dev-connection'
+        requiresApproval: false
+      - name: staging
+        displayName: 'Staging'
+        serviceConnection: 'azure-staging-connection'
+        requiresApproval: true
+      - name: prod
+        displayName: 'Production'
+        serviceConnection: 'azure-prod-connection'
+        requiresApproval: true
+
+  # Backup Configuration
+  - name: createBackup
+    displayName: 'Create Backup Before Update'
+    type: boolean
+    default: true
+
+  # Dry Run Mode
+  - name: dryRun
+    displayName: 'Dry Run (Preview Changes Only)'
+    type: boolean
+    default: false
+
+  # Specific Environment Selection (optional - run only specific environment)
+  - name: targetEnvironment
+    displayName: 'Target Specific Environment (leave empty for all)'
+    type: string
+    default: ''
+    values:
+      - ''
+      - dev
+      - staging
+      - prod
+
+variables:
+  - name: pipelineVersion
+    value: '1.0.0'
+  - name: scriptsPath
+    value: '$(Build.SourcesDirectory)/scripts'
+
+# Pool configuration
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  # Validation Stage - Always runs first
+  - stage: Validate
+    displayName: 'Validate Input Parameters'
+    jobs:
+      - job: ValidateInputs
+        displayName: 'Validate Pipeline Inputs'
+        steps:
+          - checkout: self
+          
+          - task: PowerShell@2
+            displayName: 'Validate Parameters'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "======================================"
+                Write-Host "Pipeline Version: $(pipelineVersion)"
+                Write-Host "======================================"
+                
+                $keyVaultName = '${{ parameters.keyVaultName }}'
+                $secretName = '${{ parameters.secretName }}'
+                $jsonUpdates = '${{ parameters.jsonUpdates }}'
+                
+                $errors = @()
+                
+                if ([string]::IsNullOrWhiteSpace($keyVaultName)) {
+                    $errors += "Key Vault Name is required"
+                }
+                
+                if ([string]::IsNullOrWhiteSpace($secretName)) {
+                    $errors += "Secret Name is required"
+                }
+                
+                if ([string]::IsNullOrWhiteSpace($jsonUpdates)) {
+                    $errors += "JSON Updates are required (format: key1=value1,key2=value2)"
+                }
+                
+                if ($errors.Count -gt 0) {
+                    Write-Host "##[error]Validation Failed:"
+                    foreach ($error in $errors) {
+                        Write-Host "##[error]  - $error"
+                    }
+                    exit 1
+                }
+                
+                Write-Host "##[section]Validation Passed"
+                Write-Host "Key Vault: $keyVaultName"
+                Write-Host "Secret: $secretName"
+                Write-Host "Updates: $jsonUpdates"
+                Write-Host "Dry Run: ${{ parameters.dryRun }}"
+                Write-Host "Create Backup: ${{ parameters.createBackup }}"
+              pwsh: true
+
+  # Development Environment Stage
+  - ${{ if or(eq(parameters.targetEnvironment, ''), eq(parameters.targetEnvironment, 'dev')) }}:
+    - template: templates/stages/update-secret-stage.yml
+      parameters:
+        environmentName: 'dev'
+        environmentDisplayName: 'Development'
+        serviceConnection: 'azure-dev-connection'
+        keyVaultName: ${{ parameters.keyVaultName }}
+        secretName: ${{ parameters.secretName }}
+        jsonUpdates: ${{ parameters.jsonUpdates }}
+        supportNestedKeys: ${{ parameters.supportNestedKeys }}
+        createBackup: ${{ parameters.createBackup }}
+        dryRun: ${{ parameters.dryRun }}
+        dependsOn: 'Validate'
+
+  # Staging Environment Stage
+  - ${{ if or(eq(parameters.targetEnvironment, ''), eq(parameters.targetEnvironment, 'staging')) }}:
+    - template: templates/stages/update-secret-stage.yml
+      parameters:
+        environmentName: 'staging'
+        environmentDisplayName: 'Staging'
+        serviceConnection: 'azure-staging-connection'
+        keyVaultName: ${{ parameters.keyVaultName }}
+        secretName: ${{ parameters.secretName }}
+        jsonUpdates: ${{ parameters.jsonUpdates }}
+        supportNestedKeys: ${{ parameters.supportNestedKeys }}
+        createBackup: ${{ parameters.createBackup }}
+        dryRun: ${{ parameters.dryRun }}
+        dependsOn: 
+          - 'Validate'
+          - ${{ if or(eq(parameters.targetEnvironment, ''), eq(parameters.targetEnvironment, 'dev')) }}:
+            - 'Update_dev'
+
+  # Production Environment Stage
+  - ${{ if or(eq(parameters.targetEnvironment, ''), eq(parameters.targetEnvironment, 'prod')) }}:
+    - template: templates/stages/update-secret-stage.yml
+      parameters:
+        environmentName: 'prod'
+        environmentDisplayName: 'Production'
+        serviceConnection: 'azure-prod-connection'
+        keyVaultName: ${{ parameters.keyVaultName }}
+        secretName: ${{ parameters.secretName }}
+        jsonUpdates: ${{ parameters.jsonUpdates }}
+        supportNestedKeys: ${{ parameters.supportNestedKeys }}
+        createBackup: ${{ parameters.createBackup }}
+        dryRun: ${{ parameters.dryRun }}
+        dependsOn:
+          - 'Validate'
+          - ${{ if or(eq(parameters.targetEnvironment, ''), eq(parameters.targetEnvironment, 'staging')) }}:
+            - 'Update_staging'

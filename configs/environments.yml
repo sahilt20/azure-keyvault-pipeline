@@ -1,0 +1,47 @@
+# Environment Configuration
+# This file contains environment-specific settings for the Key Vault pipeline
+
+environments:
+  # Development Environment
+  - name: dev
+    displayName: Development
+    serviceConnection: azure-dev-connection
+    keyVaultSuffix: "-dev"  # e.g., mykeyvault-dev
+    requiresApproval: false
+    approvers: []
+    
+  # Staging Environment  
+  - name: staging
+    displayName: Staging
+    serviceConnection: azure-staging-connection
+    keyVaultSuffix: "-staging"
+    requiresApproval: true
+    approvers:
+      - team-leads@company.com
+    approvalTimeout: 4320  # 3 days in minutes
+    
+  # Production Environment
+  - name: prod
+    displayName: Production
+    serviceConnection: azure-prod-connection
+    keyVaultSuffix: "-prod"
+    requiresApproval: true
+    approvers:
+      - senior-engineers@company.com
+      - security-team@company.com
+    approvalTimeout: 1440  # 1 day in minutes
+
+# Default settings
+defaults:
+  createBackup: true
+  supportNestedKeys: true
+  secretContentType: "application/json"
+  
+# Validation rules
+validation:
+  # Regex patterns for allowed Key Vault names
+  allowedKeyVaultPattern: "^[a-zA-Z][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]$"
+  # Regex patterns for allowed secret names
+  allowedSecretPattern: "^[a-zA-Z][a-zA-Z0-9-]*$"
+  # Maximum secret value size (in characters)
+  maxSecretSize: 25600
