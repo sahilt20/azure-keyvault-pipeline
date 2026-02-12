@@ -34,12 +34,6 @@ parameters:
       - 'kv-shared-staging'
       - 'kv-shared-prod'
 
-  # Allow custom vault name if not in dropdown
-  - name: customKeyVaultName
-    displayName: 'Custom Key Vault Name (if not in dropdown above)'
-    type: string
-    default: ''
-
   # Secret Name
   - name: secretName
     displayName: 'Secret Name'
@@ -144,11 +138,7 @@ variables:
   - name: scriptsPath
     value: '$(Build.SourcesDirectory)/scripts'
   - name: resolvedVaultName
-    ${{ if and(ne(parameters.customKeyVaultName, ''), ne(parameters.keyVaultName, 'select-vault')) }}:
-      value: ${{ parameters.keyVaultName }}
-    ${{ elseif ne(parameters.customKeyVaultName, '') }}:
-      value: ${{ parameters.customKeyVaultName }}
-    ${{ elseif ne(parameters.keyVaultName, 'select-vault') }}:
+    ${{ if ne(parameters.keyVaultName, 'select-vault') }}:
       value: ${{ parameters.keyVaultName }}
     ${{ else }}:
       value: ''
