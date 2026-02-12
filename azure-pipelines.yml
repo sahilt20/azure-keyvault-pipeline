@@ -253,25 +253,25 @@ stages:
   # ============================================================
   # Stage 2: Execute Operation on Target Environment
   # ============================================================
-  - template: templates/stages/keyvault-operation-stage.yml
-    parameters:
-      operation: ${{ parameters.operation }}
-      environmentName: ${{ parameters.targetEnvironment }}
-      environmentDisplayName: ${{ parameters.targetEnvironment }}
-      serviceConnection: ${{ each env in parameters.environments }}:
-        ${{ if eq(env.name, parameters.targetEnvironment) }}:
-          ${{ env.serviceConnection }}
-      keyVaultName: $(resolvedVaultName)
-      secretName: ${{ parameters.secretName }}
-      keyPath: ${{ parameters.keyPath }}
-      keyValue: ${{ parameters.keyValue }}
-      jsonUpdates: $(resolvedJsonUpdates)
-      newSecretJson: ${{ parameters.newSecretJson }}
-      supportNestedKeys: ${{ parameters.supportNestedKeys }}
-      createBackup: ${{ parameters.createBackup }}
-      dryRun: ${{ parameters.dryRun }}
-      revertVersionId: ${{ parameters.revertVersionId }}
-      revertVersionsBack: ${{ parameters.revertVersionsBack }}
-      backupName: ${{ parameters.backupName }}
-      maxVersions: ${{ parameters.maxVersions }}
-      dependsOn: 'Validate'
+  - ${{ each env in parameters.environments }}:
+    - ${{ if eq(env.name, parameters.targetEnvironment) }}:
+      - template: templates/stages/keyvault-operation-stage.yml
+        parameters:
+          operation: ${{ parameters.operation }}
+          environmentName: ${{ env.name }}
+          environmentDisplayName: ${{ env.displayName }}
+          serviceConnection: ${{ env.serviceConnection }}
+          keyVaultName: $(resolvedVaultName)
+          secretName: ${{ parameters.secretName }}
+          keyPath: ${{ parameters.keyPath }}
+          keyValue: ${{ parameters.keyValue }}
+          jsonUpdates: $(resolvedJsonUpdates)
+          newSecretJson: ${{ parameters.newSecretJson }}
+          supportNestedKeys: ${{ parameters.supportNestedKeys }}
+          createBackup: ${{ parameters.createBackup }}
+          dryRun: ${{ parameters.dryRun }}
+          revertVersionId: ${{ parameters.revertVersionId }}
+          revertVersionsBack: ${{ parameters.revertVersionsBack }}
+          backupName: ${{ parameters.backupName }}
+          maxVersions: ${{ parameters.maxVersions }}
+          dependsOn: 'Validate'
