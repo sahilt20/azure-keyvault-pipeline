@@ -1,33 +1,126 @@
-# Azure Key Vault Secret Update Pipeline
-# This pipeline updates JSON-based secrets in Azure Key Vault with approval gates
+# Azure Key Vault Secret Lifecycle Management Pipeline
+# Supports: Add, Update, Delete Key, Revert, Backup, Restore, List operations
+# Secrets are stored as JSON objects with nested key-value pairs
 
 trigger: none  # Manual trigger only
 
 parameters:
-  # Key Vault Configuration
+  # Operation Selection
+  - name: operation
+    displayName: 'Operation'
+    type: string
+    default: 'update'
+    values:
+      - update          # Update existing keys in a JSON secret
+      - add             # Add a completely new secret (fails if exists)
+      - delete-key      # Remove a key from the JSON object
+      - revert          # Revert secret to a previous version
+      - backup          # Export secret to a backup secret
+      - restore         # Restore secret from a backup
+      - list-versions   # List all versions of a secret
+      - list-secrets    # List all secrets in the vault
+
+  # Key Vault Selection (dropdown)
   - name: keyVaultName
     displayName: 'Key Vault Name'
     type: string
+    default: 'select-vault'
+    values:
+      - 'select-vault'
+      - 'kv-app-dev'
+      - 'kv-app-staging'
+      - 'kv-app-prod'
+      - 'kv-shared-dev'
+      - 'kv-shared-staging'
+      - 'kv-shared-prod'
+
+  # Allow custom vault name if not in dropdown
+  - name: customKeyVaultName
+    displayName: 'Custom Key Vault Name (if not in dropdown above)'
+    type: string
     default: ''
 
+  # Secret Name
   - name: secretName
-    displayName: 'Secret Name to Update'
+    displayName: 'Secret Name'
     type: string
     default: ''
 
-  # JSON Updates - Format: key1=value1,key2=value2
+  # JSON key path for targeted operations (dot notation for nested)
+  - name: keyPath
+    displayName: 'JSON Key Path (dot notation, e.g. database.connection.host)'
+    type: string
+    default: ''
+
+  # Value for add/update operations
+  - name: keyValue
+    displayName: 'Value (for add/update operations)'
+    type: string
+    default: ''
+
+  # Bulk updates - Format: key1=value1,key2=value2
   - name: jsonUpdates
-    displayName: 'JSON Key-Value Updates (format: key1=value1,key2=value2)'
+    displayName: 'Bulk JSON Updates (format: key1=value1,key2=value2) - overrides keyPath/keyValue'
     type: string
     default: ''
 
-  # Advanced: Nested JSON path support (e.g., "parent.child.key=value")
+  # Full JSON body for creating a brand new secret
+  - name: newSecretJson
+    displayName: 'Full JSON Body (for add operation - new secret)'
+    type: string
+    default: ''
+
+  # Revert configuration
+  - name: revertVersionId
+    displayName: 'Version ID to Revert To (for revert operation, leave empty for previous)'
+    type: string
+    default: ''
+
+  # How many versions back to revert (if no version ID specified)
+  - name: revertVersionsBack
+    displayName: 'Versions Back to Revert (default: 1 = previous version)'
+    type: number
+    default: 1
+
+  # Backup name for backup/restore
+  - name: backupName
+    displayName: 'Backup Name (for restore operation - name of backup secret)'
+    type: string
+    default: ''
+
+  # Advanced Options
   - name: supportNestedKeys
-    displayName: 'Support Nested JSON Keys'
+    displayName: 'Support Nested JSON Keys (dot notation)'
     type: boolean
     default: true
 
-  # Target Environments
+  - name: createBackup
+    displayName: 'Create Backup Before Changes'
+    type: boolean
+    default: true
+
+  - name: dryRun
+    displayName: 'Dry Run (Preview Changes Only)'
+    type: boolean
+    default: false
+
+  # Number of versions to show in list
+  - name: maxVersions
+    displayName: 'Max Versions to List (for list-versions operation)'
+    type: number
+    default: 10
+
+  # Target Environment
+  - name: targetEnvironment
+    displayName: 'Target Environment'
+    type: string
+    default: 'dev'
+    values:
+      - dev
+      - staging
+      - prod
+
+  # Environment Definitions
   - name: environments
     displayName: 'Target Environments'
     type: object
@@ -45,41 +138,36 @@ parameters:
         serviceConnection: 'azure-prod-connection'
         requiresApproval: true
 
-  # Backup Configuration
-  - name: createBackup
-    displayName: 'Create Backup Before Update'
-    type: boolean
-    default: true
-
-  # Dry Run Mode
-  - name: dryRun
-    displayName: 'Dry Run (Preview Changes Only)'
-    type: boolean
-    default: false
-
-  # Specific Environment Selection (optional - run only specific environment)
-  - name: targetEnvironment
-    displayName: 'Target Specific Environment (leave empty for all)'
-    type: string
-    default: ''
-    values:
-      - ''
-      - dev
-      - staging
-      - prod
-
 variables:
   - name: pipelineVersion
-    value: '1.0.0'
+    value: '2.0.0'
   - name: scriptsPath
     value: '$(Build.SourcesDirectory)/scripts'
+  - name: resolvedVaultName
+    ${{ if and(ne(parameters.customKeyVaultName, ''), ne(parameters.keyVaultName, 'select-vault')) }}:
+      value: ${{ parameters.keyVaultName }}
+    ${{ elseif ne(parameters.customKeyVaultName, '') }}:
+      value: ${{ parameters.customKeyVaultName }}
+    ${{ elseif ne(parameters.keyVaultName, 'select-vault') }}:
+      value: ${{ parameters.keyVaultName }}
+    ${{ else }}:
+      value: ''
+  # Build the jsonUpdates from keyPath/keyValue if jsonUpdates is empty
+  - name: resolvedJsonUpdates
+    ${{ if ne(parameters.jsonUpdates, '') }}:
+      value: ${{ parameters.jsonUpdates }}
+    ${{ elseif and(ne(parameters.keyPath, ''), ne(parameters.keyValue, '')) }}:
+      value: '${{ parameters.keyPath }}=${{ parameters.keyValue }}'
+    ${{ else }}:
+      value: ''
 
-# Pool configuration
 pool:
   vmImage: 'ubuntu-latest'
 
 stages:
-  # Validation Stage - Always runs first
+  # ============================================================
+  # Stage 1: Validate Input Parameters
+  # ============================================================
   - stage: Validate
     displayName: 'Validate Input Parameters'
     jobs:
@@ -87,97 +175,103 @@ stages:
         displayName: 'Validate Pipeline Inputs'
         steps:
           - checkout: self
-          
+
           - task: PowerShell@2
             displayName: 'Validate Parameters'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "======================================"
-                Write-Host "Pipeline Version: $(pipelineVersion)"
-                Write-Host "======================================"
-                
-                $keyVaultName = '${{ parameters.keyVaultName }}'
+                Write-Host "##[section]======================================"
+                Write-Host "##[section]Key Vault Lifecycle Pipeline v$(pipelineVersion)"
+                Write-Host "##[section]======================================"
+
+                $operation = '${{ parameters.operation }}'
+                $vaultName = '$(resolvedVaultName)'
                 $secretName = '${{ parameters.secretName }}'
-                $jsonUpdates = '${{ parameters.jsonUpdates }}'
-                
+                $jsonUpdates = '$(resolvedJsonUpdates)'
+                $newSecretJson = '${{ parameters.newSecretJson }}'
+                $backupName = '${{ parameters.backupName }}'
+
                 $errors = @()
-                
-                if ([string]::IsNullOrWhiteSpace($keyVaultName)) {
-                    $errors += "Key Vault Name is required"
+
+                # Vault name is required for all operations
+                if ([string]::IsNullOrWhiteSpace($vaultName)) {
+                    $errors += "Key Vault Name is required. Select from dropdown or provide custom name."
                 }
-                
-                if ([string]::IsNullOrWhiteSpace($secretName)) {
-                    $errors += "Secret Name is required"
+
+                # Validate vault name format
+                if (-not [string]::IsNullOrWhiteSpace($vaultName) -and $vaultName -notmatch '^[a-zA-Z][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]$') {
+                    $errors += "Key Vault name '$vaultName' does not match Azure naming requirements (3-24 chars, alphanumeric and hyphens)"
                 }
-                
-                if ([string]::IsNullOrWhiteSpace($jsonUpdates)) {
-                    $errors += "JSON Updates are required (format: key1=value1,key2=value2)"
+
+                # Secret name required for most operations
+                if ($operation -ne 'list-secrets' -and [string]::IsNullOrWhiteSpace($secretName)) {
+                    $errors += "Secret Name is required for operation '$operation'"
                 }
-                
+
+                # Operation-specific validation
+                switch ($operation) {
+                    'update' {
+                        if ([string]::IsNullOrWhiteSpace($jsonUpdates)) {
+                            $errors += "JSON Updates or Key Path + Value are required for update operation"
+                        }
+                    }
+                    'add' {
+                        if ([string]::IsNullOrWhiteSpace($newSecretJson) -and [string]::IsNullOrWhiteSpace($jsonUpdates)) {
+                            $errors += "Provide either Full JSON Body or Key-Value pairs for add operation"
+                        }
+                    }
+                    'delete-key' {
+                        if ([string]::IsNullOrWhiteSpace('${{ parameters.keyPath }}')) {
+                            $errors += "Key Path is required for delete-key operation"
+                        }
+                    }
+                    'restore' {
+                        if ([string]::IsNullOrWhiteSpace($backupName)) {
+                            $errors += "Backup Name is required for restore operation"
+                        }
+                    }
+                }
+
                 if ($errors.Count -gt 0) {
                     Write-Host "##[error]Validation Failed:"
-                    foreach ($error in $errors) {
-                        Write-Host "##[error]  - $error"
+                    foreach ($err in $errors) {
+                        Write-Host "##[error]  - $err"
                     }
                     exit 1
                 }
-                
+
                 Write-Host "##[section]Validation Passed"
-                Write-Host "Key Vault: $keyVaultName"
-                Write-Host "Secret: $secretName"
-                Write-Host "Updates: $jsonUpdates"
-                Write-Host "Dry Run: ${{ parameters.dryRun }}"
+                Write-Host "Operation:    $operation"
+                Write-Host "Key Vault:    $vaultName"
+                Write-Host "Secret:       $secretName"
+                Write-Host "Environment:  ${{ parameters.targetEnvironment }}"
+                Write-Host "Dry Run:      ${{ parameters.dryRun }}"
                 Write-Host "Create Backup: ${{ parameters.createBackup }}"
               pwsh: true
 
-  # Development Environment Stage
-  - ${{ if or(eq(parameters.targetEnvironment, ''), eq(parameters.targetEnvironment, 'dev')) }}:
-    - template: templates/stages/update-secret-stage.yml
-      parameters:
-        environmentName: 'dev'
-        environmentDisplayName: 'Development'
-        serviceConnection: 'azure-dev-connection'
-        keyVaultName: ${{ parameters.keyVaultName }}
-        secretName: ${{ parameters.secretName }}
-        jsonUpdates: ${{ parameters.jsonUpdates }}
-        supportNestedKeys: ${{ parameters.supportNestedKeys }}
-        createBackup: ${{ parameters.createBackup }}
-        dryRun: ${{ parameters.dryRun }}
-        dependsOn: 'Validate'
-
-  # Staging Environment Stage
-  - ${{ if or(eq(parameters.targetEnvironment, ''), eq(parameters.targetEnvironment, 'staging')) }}:
-    - template: templates/stages/update-secret-stage.yml
-      parameters:
-        environmentName: 'staging'
-        environmentDisplayName: 'Staging'
-        serviceConnection: 'azure-staging-connection'
-        keyVaultName: ${{ parameters.keyVaultName }}
-        secretName: ${{ parameters.secretName }}
-        jsonUpdates: ${{ parameters.jsonUpdates }}
-        supportNestedKeys: ${{ parameters.supportNestedKeys }}
-        createBackup: ${{ parameters.createBackup }}
-        dryRun: ${{ parameters.dryRun }}
-        dependsOn: 
-          - 'Validate'
-          - ${{ if or(eq(parameters.targetEnvironment, ''), eq(parameters.targetEnvironment, 'dev')) }}:
-            - 'Update_dev'
-
-  # Production Environment Stage
-  - ${{ if or(eq(parameters.targetEnvironment, ''), eq(parameters.targetEnvironment, 'prod')) }}:
-    - template: templates/stages/update-secret-stage.yml
-      parameters:
-        environmentName: 'prod'
-        environmentDisplayName: 'Production'
-        serviceConnection: 'azure-prod-connection'
-        keyVaultName: ${{ parameters.keyVaultName }}
-        secretName: ${{ parameters.secretName }}
-        jsonUpdates: ${{ parameters.jsonUpdates }}
-        supportNestedKeys: ${{ parameters.supportNestedKeys }}
-        createBackup: ${{ parameters.createBackup }}
-        dryRun: ${{ parameters.dryRun }}
-        dependsOn:
-          - 'Validate'
-          - ${{ if or(eq(parameters.targetEnvironment, ''), eq(parameters.targetEnvironment, 'staging')) }}:
-            - 'Update_staging'
+  # ============================================================
+  # Stage 2: Execute Operation on Target Environment
+  # ============================================================
+  - template: templates/stages/keyvault-operation-stage.yml
+    parameters:
+      operation: ${{ parameters.operation }}
+      environmentName: ${{ parameters.targetEnvironment }}
+      environmentDisplayName: ${{ parameters.targetEnvironment }}
+      serviceConnection: ${{ each env in parameters.environments }}:
+        ${{ if eq(env.name, parameters.targetEnvironment) }}:
+          ${{ env.serviceConnection }}
+      keyVaultName: $(resolvedVaultName)
+      secretName: ${{ parameters.secretName }}
+      keyPath: ${{ parameters.keyPath }}
+      keyValue: ${{ parameters.keyValue }}
+      jsonUpdates: $(resolvedJsonUpdates)
+      newSecretJson: ${{ parameters.newSecretJson }}
+      supportNestedKeys: ${{ parameters.supportNestedKeys }}
+      createBackup: ${{ parameters.createBackup }}
+      dryRun: ${{ parameters.dryRun }}
+      revertVersionId: ${{ parameters.revertVersionId }}
+      revertVersionsBack: ${{ parameters.revertVersionsBack }}
+      backupName: ${{ parameters.backupName }}
+      maxVersions: ${{ parameters.maxVersions }}
+      dependsOn: 'Validate'

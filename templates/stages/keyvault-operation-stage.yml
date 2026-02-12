@@ -1,0 +1,82 @@
+# Stage Template for Key Vault Secret Lifecycle Operations
+# Routes all operations through the unified Manage-KeyVaultSecret.ps1 orchestrator
+
+parameters:
+  - name: operation
+    type: string
+  - name: environmentName
+    type: string
+  - name: environmentDisplayName
+    type: string
+  - name: serviceConnection
+    type: string
+  - name: keyVaultName
+    type: string
+  - name: secretName
+    type: string
+    default: ''
+  - name: keyPath
+    type: string
+    default: ''
+  - name: keyValue
+    type: string
+    default: ''
+  - name: jsonUpdates
+    type: string
+    default: ''
+  - name: newSecretJson
+    type: string
+    default: ''
+  - name: supportNestedKeys
+    type: boolean
+    default: true
+  - name: createBackup
+    type: boolean
+    default: true
+  - name: dryRun
+    type: boolean
+    default: false
+  - name: revertVersionId
+    type: string
+    default: ''
+  - name: revertVersionsBack
+    type: number
+    default: 1
+  - name: backupName
+    type: string
+    default: ''
+  - name: maxVersions
+    type: number
+    default: 10
+  - name: dependsOn
+    type: object
+    default: []
+
+stages:
+  - stage: Execute_${{ parameters.operation }}_${{ parameters.environmentName }}
+    displayName: '${{ parameters.operation }} - ${{ parameters.environmentDisplayName }}'
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: succeeded()
+    variables:
+      - name: envName
+        value: ${{ parameters.environmentName }}
+    jobs:
+      - template: ../jobs/keyvault-operation-job.yml
+        parameters:
+          operation: ${{ parameters.operation }}
+          environmentName: ${{ parameters.environmentName }}
+          environmentDisplayName: ${{ parameters.environmentDisplayName }}
+          serviceConnection: ${{ parameters.serviceConnection }}
+          keyVaultName: ${{ parameters.keyVaultName }}
+          secretName: ${{ parameters.secretName }}
+          keyPath: ${{ parameters.keyPath }}
+          keyValue: ${{ parameters.keyValue }}
+          jsonUpdates: ${{ parameters.jsonUpdates }}
+          newSecretJson: ${{ parameters.newSecretJson }}
+          supportNestedKeys: ${{ parameters.supportNestedKeys }}
+          createBackup: ${{ parameters.createBackup }}
+          dryRun: ${{ parameters.dryRun }}
+          revertVersionId: ${{ parameters.revertVersionId }}
+          revertVersionsBack: ${{ parameters.revertVersionsBack }}
+          backupName: ${{ parameters.backupName }}
+          maxVersions: ${{ parameters.maxVersions }}

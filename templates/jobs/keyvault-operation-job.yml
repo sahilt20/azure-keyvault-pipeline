@@ -1,0 +1,104 @@
+# Job Template for Key Vault Secret Lifecycle Operations
+# Uses the unified Manage-KeyVaultSecret.ps1 orchestrator for all operations
+
+parameters:
+  - name: operation
+    type: string
+  - name: environmentName
+    type: string
+  - name: environmentDisplayName
+    type: string
+  - name: serviceConnection
+    type: string
+  - name: keyVaultName
+    type: string
+  - name: secretName
+    type: string
+    default: ''
+  - name: keyPath
+    type: string
+    default: ''
+  - name: keyValue
+    type: string
+    default: ''
+  - name: jsonUpdates
+    type: string
+    default: ''
+  - name: newSecretJson
+    type: string
+    default: ''
+  - name: supportNestedKeys
+    type: boolean
+    default: true
+  - name: createBackup
+    type: boolean
+    default: true
+  - name: dryRun
+    type: boolean
+    default: false
+  - name: revertVersionId
+    type: string
+    default: ''
+  - name: revertVersionsBack
+    type: number
+    default: 1
+  - name: backupName
+    type: string
+    default: ''
+  - name: maxVersions
+    type: number
+    default: 10
+
+jobs:
+  - deployment: KVOperation_${{ parameters.environmentName }}
+    displayName: '${{ parameters.operation }} in ${{ parameters.environmentDisplayName }}'
+    environment: ${{ parameters.environmentName }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - checkout: self
+
+            - task: AzureCLI@2
+              displayName: 'Execute: ${{ parameters.operation }}'
+              inputs:
+                azureSubscription: ${{ parameters.serviceConnection }}
+                scriptType: 'pscore'
+                scriptLocation: 'scriptPath'
+                scriptPath: '$(Build.SourcesDirectory)/scripts/Manage-KeyVaultSecret.ps1'
+                arguments: >-
+                  -Operation "${{ parameters.operation }}"
+                  -KeyVaultName "${{ parameters.keyVaultName }}"
+                  -SecretName "${{ parameters.secretName }}"
+                  -KeyPath "${{ parameters.keyPath }}"
+                  -KeyValue "${{ parameters.keyValue }}"
+                  -JsonUpdates "${{ parameters.jsonUpdates }}"
+                  -NewSecretJson "${{ parameters.newSecretJson }}"
+                  -SupportNestedKeys:$${{ parameters.supportNestedKeys }}
+                  -CreateBackup:$${{ parameters.createBackup }}
+                  -DryRun:$${{ parameters.dryRun }}
+                  -RevertVersionId "${{ parameters.revertVersionId }}"
+                  -RevertVersionsBack ${{ parameters.revertVersionsBack }}
+                  -BackupName "${{ parameters.backupName }}"
+                  -MaxVersions ${{ parameters.maxVersions }}
+                  -EnvironmentName "${{ parameters.environmentName }}"
+              env:
+                SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+            - task: PowerShell@2
+              displayName: 'Operation Summary'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  Write-Host "##[section]Operation Summary"
+                  Write-Host "======================================"
+                  Write-Host "Operation:    ${{ parameters.operation }}"
+                  Write-Host "Environment:  ${{ parameters.environmentDisplayName }}"
+                  Write-Host "Key Vault:    ${{ parameters.keyVaultName }}"
+                  Write-Host "Secret:       ${{ parameters.secretName }}"
+                  Write-Host "Dry Run:      ${{ parameters.dryRun }}"
+                  Write-Host "Backup:       ${{ parameters.createBackup }}"
+                  Write-Host "Status:       $(SecretOperationStatus)"
+                  Write-Host "======================================"
+                pwsh: true
+              condition: always()

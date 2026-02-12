@@ -1,204 +1,293 @@
-# Azure Key Vault Secret Update Pipeline
+# Azure Key Vault Secret Lifecycle Management Pipeline
 
-A robust Azure DevOps YAML pipeline framework for updating JSON-based secrets in Azure Key Vault with user inputs, approval gates, and comprehensive error handling.
+A production-grade Azure DevOps YAML pipeline for full lifecycle management of JSON-based secrets in Azure Key Vault. Supports adding, updating, deleting keys, reverting to previous versions, backup/restore, and auditing — all with approval gates, dry-run mode, and sensitive value masking.
 
 ## Features
 
-- ✅ **Runtime Parameters**: Accept user input for Key Vault name, secret name, and JSON updates
-- ✅ **Multi-Environment Support**: Deploy across Dev, Staging, and Production with environment-specific configurations
-- ✅ **Approval Gates**: Environment-based approvals using Azure DevOps Environments
-- ✅ **Nested JSON Support**: Update nested keys using dot notation (e.g., `database.connection.host`)
-- ✅ **Backup Creation**: Automatic backup of secrets before updates
-- ✅ **Dry Run Mode**: Preview changes without modifying secrets
-- ✅ **Comprehensive Logging**: Masked sensitive values with detailed audit trail
-- ✅ **Error Handling**: Robust try-catch with rollback capabilities
+- **8 Operations**: add, update, delete-key, revert, backup, restore, list-versions, list-secrets
+- **Vault Name Dropdown**: Pre-configured vault names selectable from the pipeline UI
+- **Nested JSON Support**: Update deep keys using dot notation (`database.connection.host`)
+- **Version Revert**: Roll back to any previous secret version by ID or N-versions-back
+- **Backup & Restore**: Named backups with restore capability, plus Azure-native `.bak` file export
+- **Dry Run Mode**: Preview any operation without making changes
+- **Automatic Backups**: Creates backups before all destructive operations
+- **Multi-Environment**: Dev, Staging, Production with environment-based approval gates
+- **Audit Trail**: All operations tagged with metadata (operation type, timestamp, changed keys)
+- **Sensitive Masking**: Secret values masked in all pipeline logs
 
 ## Prerequisites
 
 1. **Azure DevOps Project** with Pipelines enabled
 2. **Azure Subscription** with Key Vault(s) configured
-3. **Service Connection** to Azure with Key Vault access permissions:
+3. **Service Connections** for each environment with Key Vault permissions:
    - `Microsoft.KeyVault/vaults/secrets/read`
    - `Microsoft.KeyVault/vaults/secrets/write`
-4. **Azure DevOps Environments** configured for approvals (optional)
+   - `Microsoft.KeyVault/vaults/secrets/list`
+4. **Azure DevOps Environments** configured for approval gates (staging/prod)
 
 ## Quick Start
 
 ### 1. Import the Pipeline
 
-1. Copy this repository to your Azure DevOps project
+1. Push this repository to your Azure DevOps project
 2. Navigate to **Pipelines** > **New Pipeline**
 3. Select your repository and choose "Existing Azure Pipelines YAML file"
 4. Select `/azure-pipelines.yml`
 
-### 2. Configure Service Connections
+### 2. Configure Vault Names
 
-Create Azure Resource Manager service connections for each environment:
+Edit the `keyVaultName` parameter values in `azure-pipelines.yml` to match your vault names:
 
-1. Go to **Project Settings** > **Service connections**
-2. Create connections named:
-   - `azure-dev-connection`
-   - `azure-staging-connection`
-   - `azure-prod-connection`
+```yaml
+- name: keyVaultName
+  values:
+    - 'select-vault'
+    - 'your-vault-dev'
+    - 'your-vault-staging'
+    - 'your-vault-prod'
+```
 
-### 3. Set Up Environments (for Approvals)
+Also update `configs/environments.yml` with your vault registry.
+
+### 3. Configure Service Connections
+
+Create Azure Resource Manager service connections:
+- `azure-dev-connection`
+- `azure-staging-connection`
+- `azure-prod-connection`
+
+### 4. Set Up Environments (for Approvals)
 
 1. Go to **Pipelines** > **Environments**
 2. Create environments: `dev`, `staging`, `prod`
-3. For `staging` and `prod`, add **Approvals and checks**:
-   - Click on the environment
-   - Go to **Approvals and checks**
-   - Add **Approvals** and specify approvers
+3. For `staging` and `prod`, add **Approvals and checks**
 
-### 4. Run the Pipeline
+## Operations
 
-1. Navigate to your pipeline
-2. Click **Run pipeline**
-3. Fill in the parameters:
-   - **Key Vault Name**: e.g., `my-keyvault`
-   - **Secret Name**: e.g., `app-config`
-   - **JSON Updates**: e.g., `apiKey=newValue,database.host=newserver.com`
+### Update Keys in a JSON Secret
 
-## Usage Examples
-
-### Basic Update
-
-Update a single key in a JSON secret:
+Update one or more keys inside an existing JSON secret.
 
 ```
-Key Vault Name: my-keyvault
-Secret Name: app-settings
-JSON Updates: apiKey=new-api-key-value
+Operation:    update
+Key Vault:    kv-app-dev
+Secret Name:  app-config
+Key Path:     database.connection.host
+Value:        newdb.server.com
 ```
 
-### Multiple Updates
-
-Update multiple keys:
-
+Or use bulk updates:
 ```
-JSON Updates: apiKey=newkey123,environment=production,feature.enabled=true
+Bulk JSON Updates: database.host=newdb.com,database.port=5432,api.key=new-key
 ```
 
-### Nested Key Updates
+### Add a New Secret
 
-Update nested JSON properties using dot notation:
+Create a brand new secret (fails if it already exists).
 
+**Option A - Full JSON body:**
 ```
-JSON Updates: database.connection.host=newdb.server.com,database.connection.port=5432
-```
-
-**Before:**
-```json
-{
-  "database": {
-    "connection": {
-      "host": "olddb.server.com",
-      "port": 3306
-    }
-  }
-}
+Operation:        add
+Secret Name:      new-service-config
+Full JSON Body:   {"apiUrl":"https://api.example.com","timeout":30,"auth":{"clientId":"abc","scope":"read"}}
 ```
 
-**After:**
-```json
-{
-  "database": {
-    "connection": {
-      "host": "newdb.server.com",
-      "port": "5432"
-    }
-  }
-}
+**Option B - Key-value pairs:**
+```
+Operation:        add
+Secret Name:      new-service-config
+Bulk JSON Updates: apiUrl=https://api.example.com,timeout=30,auth.clientId=abc
 ```
 
-### Dry Run Mode
+### Delete a Key from JSON
 
-Preview changes without modifying the secret:
-
-1. Check **Dry Run (Preview Changes Only)** when running the pipeline
-2. Review the output to see what would be changed
-
-### Target Specific Environment
-
-To run only on a specific environment (skip others):
+Remove a specific key (including nested) from the JSON object.
 
 ```
-Target Specific Environment: prod
+Operation:    delete-key
+Secret Name:  app-config
+Key Path:     deprecated.oldSetting
+```
+
+### Revert to Previous Version
+
+Roll back a secret to any previous version.
+
+**Revert to the previous version:**
+```
+Operation:          revert
+Secret Name:        app-config
+Versions Back:      1
+```
+
+**Revert to a specific version:**
+```
+Operation:          revert
+Secret Name:        app-config
+Version ID:         abc123def456...
+```
+
+Use `list-versions` first to find the version ID you need.
+
+### Backup a Secret
+
+Create a named backup copy of the current secret value.
+
+```
+Operation:    backup
+Secret Name:  app-config
+Backup Name:  app-config-before-migration  (optional, auto-generated if empty)
+```
+
+### Restore from Backup
+
+Restore a secret from a previously created backup.
+
+```
+Operation:    restore
+Secret Name:  app-config
+Backup Name:  app-config-before-migration
+```
+
+### List Secret Versions
+
+View the version history of a secret.
+
+```
+Operation:      list-versions
+Secret Name:    app-config
+Max Versions:   10
+```
+
+### List All Secrets
+
+List all secrets in a vault.
+
+```
+Operation:    list-secrets
+Key Vault:    kv-app-dev
 ```
 
 ## Pipeline Parameters
 
-| Parameter | Description | Required | Default |
-|-----------|-------------|----------|---------|
-| `keyVaultName` | Name of the Azure Key Vault | Yes | - |
-| `secretName` | Name of the secret to update | Yes | - |
-| `jsonUpdates` | Key-value pairs (format: `key1=value1,key2=value2`) | Yes | - |
-| `supportNestedKeys` | Enable nested key updates with dot notation | No | `true` |
-| `createBackup` | Create backup before updating | No | `true` |
-| `dryRun` | Preview changes only | No | `false` |
-| `targetEnvironment` | Run on specific environment only | No | `` (all) |
+| Parameter | Description | Required For | Default |
+|-----------|-------------|--------------|---------|
+| `operation` | Operation to perform | All | `update` |
+| `keyVaultName` | Vault name (dropdown) | All | - |
+| `customKeyVaultName` | Custom vault name (if not in dropdown) | - | `''` |
+| `secretName` | Secret name | All except list-secrets | - |
+| `keyPath` | JSON key path (dot notation) | delete-key, single update | `''` |
+| `keyValue` | Value for the key | single update | `''` |
+| `jsonUpdates` | Bulk key=value pairs | update, add | `''` |
+| `newSecretJson` | Full JSON body | add | `''` |
+| `revertVersionId` | Specific version ID | revert | `''` |
+| `revertVersionsBack` | Versions back to revert | revert | `1` |
+| `backupName` | Backup secret name | restore, backup | `''` |
+| `supportNestedKeys` | Enable dot-notation nesting | update, add | `true` |
+| `createBackup` | Auto-backup before changes | update, delete-key, revert | `true` |
+| `dryRun` | Preview only, no changes | All | `false` |
+| `maxVersions` | Max versions to list | list-versions | `10` |
+| `targetEnvironment` | Target environment | All | `dev` |
 
 ## File Structure
 
 ```
 azure-keyvault-pipeline/
-├── azure-pipelines.yml           # Main pipeline definition
+├── azure-pipelines.yml                         # Main pipeline definition
 ├── templates/
 │   ├── stages/
-│   │   └── update-secret-stage.yml   # Stage template
+│   │   ├── keyvault-operation-stage.yml         # Stage template (new)
+│   │   └── update-secret-stage.yml              # Legacy stage template
 │   └── jobs/
-│       └── update-secret-job.yml     # Job template with deployment
+│       ├── keyvault-operation-job.yml           # Job template (new)
+│       └── update-secret-job.yml                # Legacy job template
 ├── scripts/
-│   ├── Update-KeyVaultSecret.ps1     # Main orchestration script
-│   ├── Get-KeyVaultSecret.ps1        # Fetch secret helper
-│   └── Set-KeyVaultSecret.ps1        # Set secret helper
+│   ├── Manage-KeyVaultSecret.ps1                # Unified orchestrator (new)
+│   ├── Revert-KeyVaultSecret.ps1                # Version revert logic (new)
+│   ├── Update-KeyVaultSecret.ps1                # Legacy update script
+│   ├── Get-KeyVaultSecret.ps1                   # Fetch/list helper
+│   └── Set-KeyVaultSecret.ps1                   # Set/backup/restore helper
 ├── configs/
-│   └── environments.yml              # Environment configurations
-└── README.md                         # This file
+│   └── environments.yml                         # Environment + vault config
+└── README.md
+```
+
+## JSON Secret Structure Example
+
+Secrets are stored as JSON objects which can be deeply nested:
+
+```json
+{
+  "database": {
+    "connection": {
+      "host": "db.server.com",
+      "port": 5432,
+      "username": "app_user",
+      "password": "secret123"
+    },
+    "poolSize": 10
+  },
+  "api": {
+    "key": "ak_live_xxxxx",
+    "endpoint": "https://api.service.com",
+    "auth": {
+      "clientId": "abc-123",
+      "clientSecret": "cs_xxxxx",
+      "scope": "read write"
+    }
+  },
+  "featureFlags": {
+    "enableCaching": true,
+    "maintenanceMode": false
+  }
+}
+```
+
+To update the database password:
+```
+Key Path: database.connection.password
+Value:    newSecurePassword456
+```
+
+To update multiple values:
+```
+Bulk JSON Updates: database.connection.host=newdb.com,api.key=ak_live_newkey,featureFlags.enableCaching=false
 ```
 
 ## Security Best Practices
 
-1. **Least Privilege**: Grant minimal required permissions to service principals
-2. **Audit Logging**: All operations are logged with masked sensitive values
-3. **Approval Gates**: Require approvals for staging and production changes
-4. **Backup Before Update**: Always enable backup creation for production
-5. **Dry Run First**: Use dry run mode to preview changes before applying
+1. **Least Privilege**: Grant only required permissions to service principals
+2. **Approval Gates**: Require approvals for staging and production
+3. **Dry Run First**: Preview changes before applying to production
+4. **Backup Always**: Keep `createBackup` enabled for all destructive operations
+5. **Audit Tags**: All operations are tagged with metadata for audit trails
+6. **Value Masking**: Sensitive values are never shown in plain text in logs
+7. **Version History**: Use `list-versions` to audit changes before reverting
 
 ## Troubleshooting
 
 ### Common Issues
 
-**"SecretNotFound" Error**
-- Verify the secret name is correct
-- Check service principal has read permissions on Key Vault
+**"Secret already exists" on add**
+- Use `update` operation to modify existing secrets
+- `add` is only for creating brand new secrets
 
-**"Unauthorized" Error**
-- Verify service connection is configured correctly
-- Check service principal has Key Vault access policies or RBAC roles
+**"Key does not exist" on delete-key**
+- Use `list-versions` + dry-run update to inspect the JSON structure
+- Check the key path uses correct dot notation
 
-**"Invalid JSON" Error**
-- Ensure the existing secret contains valid JSON
-- Check for special characters in values (use quotes if needed)
+**"Cannot revert - fewer than 2 versions"**
+- The secret needs at least 2 versions to revert
+- Use `list-versions` to check available versions
+
+**"Unauthorized" errors**
+- Verify service connection permissions include Key Vault access
+- Check RBAC roles: Key Vault Secrets Officer or equivalent
 
 ### Debug Mode
 
-Add `-Verbose` to the PowerShell script for detailed logging:
-
-```yaml
-arguments: >-
-  -KeyVaultName "${{ parameters.keyVaultName }}"
-  -SecretName "${{ parameters.secretName }}"
-  -Verbose
-```
-
-## Contributing
-
-1. Create a feature branch
-2. Make your changes
-3. Test with dry run mode
-4. Submit a pull request
+Add `-Verbose` to script arguments in the job template for detailed logging.
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) for details.
+MIT License

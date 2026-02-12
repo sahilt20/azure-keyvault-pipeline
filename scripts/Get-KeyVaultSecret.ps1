@@ -1,19 +1,10 @@
 <#
 .SYNOPSIS
-    Fetches a secret value from Azure Key Vault.
+    Fetches secret values and version history from Azure Key Vault.
 
 .DESCRIPTION
-    This helper script retrieves the value of a secret from Azure Key Vault
-    using the Azure CLI.
-
-.PARAMETER KeyVaultName
-    The name of the Azure Key Vault.
-
-.PARAMETER SecretName
-    The name of the secret to retrieve.
-
-.OUTPUTS
-    Returns the secret value as a string, or $null if not found.
+    Helper script for retrieving secrets, listing versions, and fetching
+    specific versions from Azure Key Vault using Azure CLI.
 #>
 
 function Get-KeyVaultSecretValue {
@@ -23,22 +14,31 @@ function Get-KeyVaultSecretValue {
         [string]$KeyVaultName,
 
         [Parameter(Mandatory = $true)]
-        [string]$SecretName
+        [string]$SecretName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Version = ""
     )
 
     try {
         Write-Verbose "Fetching secret '$SecretName' from Key Vault '$KeyVaultName'..."
-        
-        # Use Azure CLI to get the secret value
-        $secretValue = az keyvault secret show `
-            --vault-name $KeyVaultName `
-            --name $SecretName `
-            --query "value" `
-            --output tsv 2>&1
 
-        # Check if the command was successful
+        $arguments = @(
+            "keyvault", "secret", "show",
+            "--vault-name", $KeyVaultName,
+            "--name", $SecretName,
+            "--query", "value",
+            "--output", "tsv"
+        )
+
+        if (-not [string]::IsNullOrWhiteSpace($Version)) {
+            $arguments += "--version"
+            $arguments += $Version
+        }
+
+        $secretValue = & az @arguments 2>&1
+
         if ($LASTEXITCODE -ne 0) {
-            # Check if it's a "not found" error
             if ($secretValue -match "SecretNotFound" -or $secretValue -match "not found") {
                 Write-Verbose "Secret '$SecretName' not found in Key Vault '$KeyVaultName'"
                 return $null
@@ -60,7 +60,84 @@ function Get-KeyVaultSecretValue {
     }
 }
 
-# Alternative function using Az PowerShell module (if available)
+function Get-KeyVaultSecretVersions {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$KeyVaultName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SecretName,
+
+        [Parameter(Mandatory = $false)]
+        [int]$MaxResults = 25
+    )
+
+    try {
+        Write-Verbose "Listing versions for secret '$SecretName'..."
+
+        $versionsJson = az keyvault secret list-versions `
+            --vault-name $KeyVaultName `
+            --name $SecretName `
+            --query "[].{id:id, created:attributes.created, updated:attributes.updated, enabled:attributes.enabled, contentType:contentType}" `
+            --output json 2>&1
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to list secret versions: $versionsJson"
+        }
+
+        $versions = $versionsJson | ConvertFrom-Json
+        $versions = $versions | ForEach-Object {
+            $versionId = ($_.id -split '/')[-1]
+            [PSCustomObject]@{
+                VersionId   = $versionId
+                Created     = $_.created
+                Updated     = $_.updated
+                Enabled     = $_.enabled
+                ContentType = $_.contentType
+                FullId      = $_.id
+            }
+        } | Sort-Object -Property Created -Descending | Select-Object -First $MaxResults
+
+        Write-Verbose "Found $($versions.Count) version(s)"
+        return $versions
+    }
+    catch {
+        Write-Error "Error listing secret versions: $_"
+        throw
+    }
+}
+
+function Get-KeyVaultSecretList {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$KeyVaultName
+    )
+
+    try {
+        Write-Verbose "Listing secrets in vault '$KeyVaultName'..."
+
+        $secretsJson = az keyvault secret list `
+            --vault-name $KeyVaultName `
+            --query "[].{name:name, enabled:attributes.enabled, created:attributes.created, updated:attributes.updated, contentType:contentType}" `
+            --output json 2>&1
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to list secrets: $secretsJson"
+        }
+
+        $secrets = $secretsJson | ConvertFrom-Json | Sort-Object -Property name
+        Write-Verbose "Found $($secrets.Count) secret(s)"
+        return $secrets
+    }
+    catch {
+        Write-Error "Error listing secrets: $_"
+        throw
+    }
+}
+
+# Alternative function using Az PowerShell module
 function Get-KeyVaultSecretValueAzModule {
     [CmdletBinding()]
     param (
@@ -72,7 +149,6 @@ function Get-KeyVaultSecretValueAzModule {
     )
 
     try {
-        # Check if Az.KeyVault module is available
         if (-not (Get-Module -ListAvailable -Name Az.KeyVault)) {
             throw "Az.KeyVault module is not installed. Please use Azure CLI method."
         }
@@ -92,5 +168,4 @@ function Get-KeyVaultSecretValueAzModule {
     }
 }
 
-# Export functions
-Export-ModuleMember -Function Get-KeyVaultSecretValue, Get-KeyVaultSecretValueAzModule -ErrorAction SilentlyContinue
+Export-ModuleMember -Function Get-KeyVaultSecretValue, Get-KeyVaultSecretVersions, Get-KeyVaultSecretList, Get-KeyVaultSecretValueAzModule -ErrorAction SilentlyContinue

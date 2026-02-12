@@ -1,16 +1,46 @@
 # Environment Configuration
-# This file contains environment-specific settings for the Key Vault pipeline
+# This file contains environment-specific settings for the Key Vault lifecycle pipeline
 
+# ============================================================
+# Key Vault Registry
+# Add your vault names here - they appear in the pipeline dropdown
+# ============================================================
+keyVaults:
+  # Application vaults
+  - name: kv-app-dev
+    environment: dev
+    description: "Application secrets - Development"
+  - name: kv-app-staging
+    environment: staging
+    description: "Application secrets - Staging"
+  - name: kv-app-prod
+    environment: prod
+    description: "Application secrets - Production"
+
+  # Shared/infrastructure vaults
+  - name: kv-shared-dev
+    environment: dev
+    description: "Shared infrastructure secrets - Development"
+  - name: kv-shared-staging
+    environment: staging
+    description: "Shared infrastructure secrets - Staging"
+  - name: kv-shared-prod
+    environment: prod
+    description: "Shared infrastructure secrets - Production"
+
+# ============================================================
+# Environment Definitions
+# ============================================================
 environments:
   # Development Environment
   - name: dev
     displayName: Development
     serviceConnection: azure-dev-connection
-    keyVaultSuffix: "-dev"  # e.g., mykeyvault-dev
+    keyVaultSuffix: "-dev"
     requiresApproval: false
     approvers: []
-    
-  # Staging Environment  
+
+  # Staging Environment
   - name: staging
     displayName: Staging
     serviceConnection: azure-staging-connection
@@ -19,7 +49,7 @@ environments:
     approvers:
       - team-leads@company.com
     approvalTimeout: 4320  # 3 days in minutes
-    
+
   # Production Environment
   - name: prod
     displayName: Production
@@ -31,17 +61,44 @@ environments:
       - security-team@company.com
     approvalTimeout: 1440  # 1 day in minutes
 
-# Default settings
+# ============================================================
+# Default Settings
+# ============================================================
 defaults:
   createBackup: true
   supportNestedKeys: true
   secretContentType: "application/json"
-  
-# Validation rules
+  maxVersionsToList: 10
+  dryRunByDefault: false
+
+# ============================================================
+# Operations Configuration
+# ============================================================
+operations:
+  # Which operations require backup before execution
+  requiresBackup:
+    - update
+    - delete-key
+    - revert
+    - restore
+
+  # Which operations are read-only (no approval needed)
+  readOnly:
+    - list-versions
+    - list-secrets
+
+  # Which operations are destructive (extra confirmation in prod)
+  destructive:
+    - delete-key
+    - revert
+    - restore
+
+# ============================================================
+# Validation Rules
+# ============================================================
 validation:
-  # Regex patterns for allowed Key Vault names
   allowedKeyVaultPattern: "^[a-zA-Z][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]$"
-  # Regex patterns for allowed secret names
   allowedSecretPattern: "^[a-zA-Z][a-zA-Z0-9-]*$"
-  # Maximum secret value size (in characters)
-  maxSecretSize: 25600
+  maxSecretSize: 25600  # characters
+  maxJsonDepth: 10
+  maxBackupsPerSecret: 50
