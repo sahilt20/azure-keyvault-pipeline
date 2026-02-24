@@ -52,7 +52,8 @@ function Set-KeyVaultSecretValue {
             "keyvault", "secret", "set",
             "--vault-name", $KeyVaultName,
             "--name", $SecretName,
-            "--value", $SecretValue
+            "--value", $SecretValue,
+            "--only-show-errors"
         )
 
         # Add content type if specified
@@ -66,7 +67,8 @@ function Set-KeyVaultSecretValue {
 
         # Check if the command was successful
         if ($LASTEXITCODE -ne 0) {
-            throw "Failed to set secret: $result"
+            $errorText = ($result | Out-String).Trim()
+            throw "Failed to set secret: $errorText"
         }
 
         Write-Verbose "Successfully set secret '$SecretName'"
@@ -74,13 +76,19 @@ function Set-KeyVaultSecretValue {
         # Add tags if specified
         if ($Tags.Count -gt 0) {
             Write-Verbose "Applying tags to secret..."
-            $tagString = ($Tags.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join " "
-            
-            az keyvault secret set-attributes `
-                --vault-name $KeyVaultName `
-                --name $SecretName `
-                --tags $tagString 2>&1 | Out-Null
-                
+            $tagArguments = @(
+                "keyvault", "secret", "set-attributes",
+                "--vault-name", $KeyVaultName,
+                "--name", $SecretName,
+                "--tags"
+            )
+            foreach ($tag in $Tags.GetEnumerator()) {
+                $tagArguments += "$($tag.Key)=$($tag.Value)"
+            }
+            $tagArguments += "--only-show-errors"
+
+            & az @tagArguments 2>&1 | Out-Null
+
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning "Failed to apply tags to secret, but secret was set successfully"
             }
@@ -167,11 +175,15 @@ function Backup-KeyVaultSecret {
         Write-Verbose "Creating backup of secret '$SecretName'..."
         
         # Get current secret value
-        $currentValue = az keyvault secret show `
-            --vault-name $KeyVaultName `
-            --name $SecretName `
-            --query "value" `
-            --output tsv 2>&1
+        $getArguments = @(
+            "keyvault", "secret", "show",
+            "--vault-name", $KeyVaultName,
+            "--name", $SecretName,
+            "--query", "value",
+            "--output", "tsv",
+            "--only-show-errors"
+        )
+        $currentValue = & az @getArguments 2>&1
 
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "Could not create backup - secret may not exist"
@@ -181,11 +193,15 @@ function Backup-KeyVaultSecret {
         # Create backup with timestamp suffix
         $backupName = "$SecretName-backup-$BackupSuffix"
         
-        az keyvault secret set `
-            --vault-name $KeyVaultName `
-            --name $backupName `
-            --value $currentValue `
-            --content-type "backup" 2>&1 | Out-Null
+        $setArguments = @(
+            "keyvault", "secret", "set",
+            "--vault-name", $KeyVaultName,
+            "--name", $backupName,
+            "--value", $currentValue,
+            "--content-type", "backup",
+            "--only-show-errors"
+        )
+        & az @setArguments 2>&1 | Out-Null
 
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to create backup secret"

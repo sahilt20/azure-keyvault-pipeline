@@ -100,19 +100,53 @@ stages:
                 $keyVaultName = '${{ parameters.keyVaultName }}'
                 $secretName = '${{ parameters.secretName }}'
                 $jsonUpdates = '${{ parameters.jsonUpdates }}'
+                $keyVaultPattern = '^[a-zA-Z][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]$'
+                $secretPattern = '^[a-zA-Z][a-zA-Z0-9-]*$'
                 
                 $errors = @()
                 
                 if ([string]::IsNullOrWhiteSpace($keyVaultName)) {
                     $errors += "Key Vault Name is required"
                 }
+                elseif ($keyVaultName -notmatch $keyVaultPattern) {
+                    $errors += "Key Vault Name '$keyVaultName' is invalid. Allowed: 3-24 chars, alphanumeric and hyphen, must start with a letter and end with alphanumeric."
+                }
                 
                 if ([string]::IsNullOrWhiteSpace($secretName)) {
                     $errors += "Secret Name is required"
                 }
+                elseif ($secretName -notmatch $secretPattern) {
+                    $errors += "Secret Name '$secretName' is invalid. Allowed: start with a letter, then letters, numbers, or hyphens."
+                }
                 
                 if ([string]::IsNullOrWhiteSpace($jsonUpdates)) {
                     $errors += "JSON Updates are required (format: key1=value1,key2=value2)"
+                }
+                else {
+                    $pairs = $jsonUpdates -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)'
+                    $keys = @()
+                    foreach ($pair in $pairs) {
+                        $pair = $pair.Trim()
+                        if ([string]::IsNullOrWhiteSpace($pair)) { continue }
+                        $eqIndex = $pair.IndexOf('=')
+                        if ($eqIndex -le 0) {
+                            $errors += "Invalid update entry detected. Expected key=value."
+                            continue
+                        }
+                        $key = $pair.Substring(0, $eqIndex).Trim()
+                        if ([string]::IsNullOrWhiteSpace($key)) {
+                            $errors += "Invalid update entry detected. Key cannot be empty."
+                            continue
+                        }
+                        if ($keys -contains $key) {
+                            $errors += "Duplicate update key '$key' in JSON Updates."
+                            continue
+                        }
+                        $keys += $key
+                    }
+                    if ($keys.Count -eq 0) {
+                        $errors += "JSON Updates must include at least one valid key=value entry."
+                    }
                 }
                 
                 if ($errors.Count -gt 0) {
@@ -126,7 +160,8 @@ stages:
                 Write-Host "##[section]Validation Passed"
                 Write-Host "Key Vault: $keyVaultName"
                 Write-Host "Secret: $secretName"
-                Write-Host "Updates: $jsonUpdates"
+                Write-Host "Update Keys: $($keys -join ', ')"
+                Write-Host "Updates Count: $($keys.Count)"
                 Write-Host "Dry Run: ${{ parameters.dryRun }}"
                 Write-Host "Create Backup: ${{ parameters.createBackup }}"
               pwsh: true

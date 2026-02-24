@@ -60,9 +60,11 @@ param (
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 . "$scriptPath/Get-KeyVaultSecret.ps1"
 . "$scriptPath/Set-KeyVaultSecret.ps1"
+. "$scriptPath/KeyVaultSecretUpdate.Core.ps1"
 
 # Set strict error handling
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
 function Write-LogMessage {
     param (
@@ -82,129 +84,6 @@ function Write-LogMessage {
     }
 }
 
-function ConvertTo-Hashtable {
-    param (
-        [Parameter(Mandatory = $true)]
-        [PSCustomObject]$InputObject
-    )
-    
-    $hashtable = @{}
-    
-    foreach ($property in $InputObject.PSObject.Properties) {
-        if ($property.Value -is [PSCustomObject]) {
-            $hashtable[$property.Name] = ConvertTo-Hashtable -InputObject $property.Value
-        }
-        elseif ($property.Value -is [System.Collections.IEnumerable] -and -not ($property.Value -is [string])) {
-            $arrayItems = @()
-            foreach ($item in $property.Value) {
-                if ($item -is [PSCustomObject]) {
-                    $arrayItems += ConvertTo-Hashtable -InputObject $item
-                }
-                else {
-                    $arrayItems += $item
-                }
-            }
-            $hashtable[$property.Name] = $arrayItems
-        }
-        else {
-            $hashtable[$property.Name] = $property.Value
-        }
-    }
-    
-    return $hashtable
-}
-
-function Set-NestedValue {
-    param (
-        [Parameter(Mandatory = $true)]
-        [hashtable]$Object,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-        
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        $Value
-    )
-    
-    $keys = $Path -split '\.'
-    $current = $Object
-    
-    for ($i = 0; $i -lt $keys.Count - 1; $i++) {
-        $key = $keys[$i]
-        
-        if (-not $current.ContainsKey($key)) {
-            $current[$key] = @{}
-        }
-        elseif ($current[$key] -isnot [hashtable]) {
-            # Convert to hashtable if needed
-            $current[$key] = @{}
-        }
-        
-        $current = $current[$key]
-    }
-    
-    $finalKey = $keys[-1]
-    $current[$finalKey] = $Value
-}
-
-function Get-NestedValue {
-    param (
-        [Parameter(Mandatory = $true)]
-        [hashtable]$Object,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-    
-    $keys = $Path -split '\.'
-    $current = $Object
-    
-    foreach ($key in $keys) {
-        if ($current -is [hashtable] -and $current.ContainsKey($key)) {
-            $current = $current[$key]
-        }
-        else {
-            return $null
-        }
-    }
-    
-    return $current
-}
-
-function Parse-JsonUpdates {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$UpdateString
-    )
-    
-    $updates = @{}
-    
-    # Split by comma, but handle values that might contain commas in quotes
-    $pairs = $UpdateString -split ',(?=(?:[^"]*"[^"]*")*[^"]*$)'
-    
-    foreach ($pair in $pairs) {
-        $pair = $pair.Trim()
-        if ([string]::IsNullOrWhiteSpace($pair)) { continue }
-        
-        # Split by first = sign only
-        $eqIndex = $pair.IndexOf('=')
-        if ($eqIndex -gt 0) {
-            $key = $pair.Substring(0, $eqIndex).Trim()
-            $value = $pair.Substring($eqIndex + 1).Trim()
-            
-            # Remove surrounding quotes if present
-            if ($value.StartsWith('"') -and $value.EndsWith('"')) {
-                $value = $value.Substring(1, $value.Length - 2)
-            }
-            
-            $updates[$key] = $value
-        }
-    }
-    
-    return $updates
-}
-
 # Main execution
 try {
     Write-LogMessage "=====================================" -Level "Section"
@@ -221,20 +100,14 @@ try {
     # Parse the updates
     Write-LogMessage "Parsing JSON updates..."
     $updates = Parse-JsonUpdates -UpdateString $JsonUpdates
-    
+
     if ($updates.Count -eq 0) {
-        throw "No valid updates found in the input string: $JsonUpdates"
+        throw "No valid updates found in the input string."
     }
-    
-    Write-LogMessage "Found $($updates.Count) update(s) to apply:"
+
+    Write-LogMessage "Found $($updates.Count) update(s) to apply."
     foreach ($key in $updates.Keys) {
-        # Mask sensitive values in logs
-        $maskedValue = if ($updates[$key].Length -gt 4) {
-            $updates[$key].Substring(0, 2) + "****" + $updates[$key].Substring($updates[$key].Length - 2)
-        } else {
-            "****"
-        }
-        Write-LogMessage "  - $key = $maskedValue"
+        Write-LogMessage "  - $key = $(Get-MaskedValue -Value $updates[$key])"
     }
     
     # Fetch existing secret
@@ -248,8 +121,11 @@ try {
     else {
         Write-LogMessage "Secret found. Parsing JSON content..."
         try {
-            $parsedJson = $existingSecret | ConvertFrom-Json
+            $parsedJson = $existingSecret | ConvertFrom-Json -Depth 50
             $jsonObject = ConvertTo-Hashtable -InputObject $parsedJson
+            if ($jsonObject -isnot [hashtable]) {
+                throw "Existing secret JSON must be an object at the root (e.g. {""key"":""value""})."
+            }
         }
         catch {
             throw "Failed to parse existing secret as JSON: $_"
@@ -259,51 +135,65 @@ try {
     # Create backup if requested
     if ($CreateBackup -and -not $DryRun -and $null -ne $existingSecret) {
         Write-LogMessage "Creating backup of existing secret..."
-        $backupSecretName = "$SecretName-backup-$(Get-Date -Format 'yyyyMMddHHmmss')"
-        Set-KeyVaultSecretValue -KeyVaultName $KeyVaultName -SecretName $backupSecretName -SecretValue $existingSecret
+        $backupSecretName = Backup-KeyVaultSecret -KeyVaultName $KeyVaultName -SecretName $SecretName
+        if ([string]::IsNullOrWhiteSpace($backupSecretName)) {
+            throw "Backup was requested but could not be created."
+        }
         Write-LogMessage "Backup created: $backupSecretName" -Level "Success"
     }
     
     # Apply updates
     Write-LogMessage "Applying updates to JSON..."
     $changeLog = @()
-    
+    $changedCount = 0
+
     foreach ($key in $updates.Keys) {
         $newValue = $updates[$key]
         
         if ($SupportNestedKeys -and $key.Contains('.')) {
             $oldValue = Get-NestedValue -Object $jsonObject -Path $key
-            Set-NestedValue -Object $jsonObject -Path $key -Value $newValue
+            if (Test-ValueChanged -OldValue $oldValue -NewValue $newValue) {
+                Set-NestedValue -Object $jsonObject -Path $key -Value $newValue
+                $changedCount++
+            }
         }
         else {
             $oldValue = if ($jsonObject.ContainsKey($key)) { $jsonObject[$key] } else { $null }
-            $jsonObject[$key] = $newValue
+            if (Test-ValueChanged -OldValue $oldValue -NewValue $newValue) {
+                $jsonObject[$key] = $newValue
+                $changedCount++
+            }
         }
         
         $changeLog += @{
             Key = $key
             OldValue = $oldValue
             NewValue = $newValue
+            Changed = (Test-ValueChanged -OldValue $oldValue -NewValue $newValue)
         }
     }
     
     # Display changes
     Write-LogMessage "Changes to be applied:" -Level "Section"
     foreach ($change in $changeLog) {
-        $oldMasked = if ($null -eq $change.OldValue) { "(new)" } 
-                     elseif ($change.OldValue.ToString().Length -gt 4) {
-                         $change.OldValue.ToString().Substring(0, 2) + "****"
-                     } else { "****" }
-        $newMasked = if ($change.NewValue.Length -gt 4) {
-            $change.NewValue.Substring(0, 2) + "****"
-        } else { "****" }
-        Write-LogMessage "  $($change.Key): $oldMasked -> $newMasked"
+        $oldMasked = if ($null -eq $change.OldValue) { "(new)" } else { Get-MaskedValue -Value $change.OldValue }
+        $newMasked = Get-MaskedValue -Value $change.NewValue
+        $status = if ($change.Changed) { "changed" } else { "unchanged" }
+        Write-LogMessage "  $($change.Key): $oldMasked -> $newMasked ($status)"
+    }
+
+    if ($changedCount -eq 0) {
+        Write-LogMessage "No effective changes detected. Secret update skipped." -Level "Warning"
+        Write-Host "##vso[task.setvariable variable=SecretUpdateStatus]NoChanges"
+        Write-Host "##vso[task.setvariable variable=UpdatedKeysCount]0"
+        exit 0
     }
     
     if ($DryRun) {
         Write-LogMessage "DRY RUN MODE - No changes were made" -Level "Warning"
-        Write-LogMessage "Preview of updated JSON structure:"
-        $jsonObject | ConvertTo-Json -Depth 10 | Write-Host
+        Write-LogMessage "Skipping JSON preview to avoid secret value exposure in logs."
+        Write-Host "##vso[task.setvariable variable=SecretUpdateStatus]DryRun"
+        Write-Host "##vso[task.setvariable variable=UpdatedKeysCount]$changedCount"
         exit 0
     }
     
@@ -320,7 +210,7 @@ try {
     
     # Output summary for Azure DevOps
     Write-Host "##vso[task.setvariable variable=SecretUpdateStatus]Success"
-    Write-Host "##vso[task.setvariable variable=UpdatedKeysCount]$($updates.Count)"
+    Write-Host "##vso[task.setvariable variable=UpdatedKeysCount]$changedCount"
 }
 catch {
     Write-LogMessage "Script execution failed: $_" -Level "Error"

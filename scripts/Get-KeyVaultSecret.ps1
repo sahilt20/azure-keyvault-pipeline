@@ -28,22 +28,26 @@ function Get-KeyVaultSecretValue {
 
     try {
         Write-Verbose "Fetching secret '$SecretName' from Key Vault '$KeyVaultName'..."
-        
-        # Use Azure CLI to get the secret value
-        $secretValue = az keyvault secret show `
-            --vault-name $KeyVaultName `
-            --name $SecretName `
-            --query "value" `
-            --output tsv 2>&1
+
+        $arguments = @(
+            "keyvault", "secret", "show",
+            "--vault-name", $KeyVaultName,
+            "--name", $SecretName,
+            "--query", "value",
+            "--output", "tsv",
+            "--only-show-errors"
+        )
+
+        $secretValue = & az @arguments 2>&1
 
         # Check if the command was successful
         if ($LASTEXITCODE -ne 0) {
-            # Check if it's a "not found" error
-            if ($secretValue -match "SecretNotFound" -or $secretValue -match "not found") {
+            $errorText = ($secretValue | Out-String).Trim()
+            if ($errorText -match "(?i)SecretNotFound|was not found|not found") {
                 Write-Verbose "Secret '$SecretName' not found in Key Vault '$KeyVaultName'"
                 return $null
             }
-            throw "Failed to fetch secret: $secretValue"
+            throw "Failed to fetch secret: $errorText"
         }
 
         if ([string]::IsNullOrWhiteSpace($secretValue)) {

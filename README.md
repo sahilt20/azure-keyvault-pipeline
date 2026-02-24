@@ -10,7 +10,7 @@ A robust Azure DevOps YAML pipeline framework for updating JSON-based secrets in
 - ✅ **Nested JSON Support**: Update nested keys using dot notation (e.g., `database.connection.host`)
 - ✅ **Backup Creation**: Automatic backup of secrets before updates
 - ✅ **Dry Run Mode**: Preview changes without modifying secrets
-- ✅ **Comprehensive Logging**: Masked sensitive values with detailed audit trail
+- ✅ **Comprehensive Logging**: Masked sensitive values with detailed audit trail (no raw secret output)
 - ✅ **Error Handling**: Robust try-catch with rollback capabilities
 
 ## Prerequisites
@@ -116,7 +116,7 @@ JSON Updates: database.connection.host=newdb.server.com,database.connection.port
 Preview changes without modifying the secret:
 
 1. Check **Dry Run (Preview Changes Only)** when running the pipeline
-2. Review the output to see what would be changed
+2. Review the redacted output to see which keys would change
 
 ### Target Specific Environment
 
